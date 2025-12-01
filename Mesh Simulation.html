@@ -1,0 +1,609 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>10-Layer Volumetric Cloth - Line Cut</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 20px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            background: #1a1a1a;
+            font-family: Arial, sans-serif;
+            color: #fff;
+        }
+
+        canvas {
+            border: 2px solid #444;
+            background: #0a0a0a;
+            cursor: grab;
+            box-shadow: 0 0 20px rgba(0, 0, 0, 0.5);
+        }
+
+        canvas:active {
+            cursor: grabbing;
+        }
+
+        .controls {
+            margin-top: 20px;
+            text-align: center;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 10px;
+        }
+
+        /* NEW: Styles for the sliders */
+        .slider-row {
+            display: flex;
+            gap: 20px;
+            background: #2a2a2a;
+            padding: 10px;
+            border-radius: 5px;
+            border: 1px solid #444;
+        }
+
+        .slider-group {
+            display: flex;
+            flex-direction: column;
+            align-items: flex-start;
+        }
+
+        .info {
+            margin-top: 10px;
+            font-size: 14px;
+            color: #aaa;
+            max-width: 800px;
+        }
+
+        button {
+            padding: 10px 20px;
+            font-size: 16px;
+            background: #333;
+            color: #fff;
+            border: 2px solid #555;
+            border-radius: 5px;
+            cursor: pointer;
+            margin: 0 5px;
+            transition: background 0.2s;
+        }
+
+        button:hover {
+            background: #555;
+        }
+
+        .feature {
+            display: inline-block;
+            margin: 5px 10px;
+            padding: 5px 10px;
+            background: #2a2a2a;
+            border-radius: 3px;
+            font-size: 12px;
+            border: 1px solid #444;
+        }
+    </style>
+</head>
+
+<body>
+    <h1>10-Layer Cloth Simulation - Line Cut</h1>
+    <canvas id="canvas" width="800" height="600"></canvas>
+
+    <div class="controls">
+        <div class="slider-row">
+            <div class="slider-group">
+                <label for="spacingInput">Spacing (Density): <span id="spacingVal">15</span></label>
+                <input type="range" id="spacingInput" min="10" max="25" value="15" step="1">
+            </div>
+            <div class="slider-group">
+                <label for="gravityInput">Gravity Y: <span id="gravityVal">0.9</span></label>
+                <input type="range" id="gravityInput" min="-0.5" max="2.0" value="0.9" step="0.1">
+            </div>
+        </div>
+
+        <button onclick="resetCloth()">Reset Cloth</button>
+
+        <div class="info">
+            <p><strong>Controls:</strong> Left-click + Drag to Pull | <span style="color:#ff8888;">Right-click + Drag to
+                    Cut (Line)</span></p>
+            <div>
+                <span class="feature">✓ 10 Distinct Layers</span>
+                <span class="feature">✓ Rainbow Spectrum</span>
+                <span class="feature">✓ Volumetric Physics</span>
+                <span class="feature">✓ Line Cutting</span>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const canvas = document.getElementById('canvas');
+        const ctx = canvas.getContext('2d');
+
+        // --- CONFIGURATION ---
+        // UPDATED: Changed to 'let' so they can be modified by sliders
+        let GRAVITY = { x: 0, y: 0.9 };
+
+        // Re-balanced dimensions for 10 layers (Total points ≈ 7000)
+        const CLOTH_WIDTH = 30;
+        const CLOTH_HEIGHT = 24;
+
+        // UPDATED: Changed to 'let' to allow dynamic updates
+        let SPACING = 15;
+
+        // Layer Config
+        const NUM_LAYERS = 10;        // UPDATED: 10 Layers
+        const LAYER_OFFSET = 3;       // Tighter offset for the thick stack
+        const LAYER_STIFFNESS = 0.85;
+
+        // Physics Config
+        const TEAR_THRESHOLD = 15.0; // Harder to tear because the block is thicker
+        const PLASTIC_THRESHOLD = 5.0;
+        const CONSTRAINT_ITERATIONS = 3;
+        const MOUSE_INFLUENCE_RADIUS = 40;
+        const MOUSE_FORCE = 0.9;
+        const AIR_DRAG = 0.02;
+        const STRUCTURAL_STIFFNESS = 1.0;
+        const SHEAR_STIFFNESS = 0.3;
+        const PLASTICITY_RATE = 0.002;
+
+        // --- CLASSES ---
+
+        class Point {
+            constructor(x, y, z, pinned = false) {
+                this.x = x;
+                this.y = y;
+                this.z = z; // Layer index
+                this.oldX = x;
+                this.oldY = y;
+                this.pinned = pinned;
+                this.id = Math.random();
+            }
+
+            update(dt) {
+                if (this.pinned) return;
+
+                let vx = this.x - this.oldX;
+                let vy = this.y - this.oldY;
+
+                const speed = Math.sqrt(vx * vx + vy * vy);
+                if (speed > 0.01) {
+                    const dragFactor = 1 - AIR_DRAG;
+                    vx *= dragFactor;
+                    vy *= dragFactor;
+                }
+
+                this.oldX = this.x;
+                this.oldY = this.y;
+
+                this.x += vx + GRAVITY.x * dt * dt;
+                this.y += vy + GRAVITY.y * dt * dt;
+
+                if (this.x < 0) {
+                    this.x = 0;
+                    this.oldX = this.x + vx * 0.5;
+                }
+                if (this.x > canvas.width) {
+                    this.x = canvas.width;
+                    this.oldX = this.x + vx * 0.5;
+                }
+                if (this.y > canvas.height) {
+                    this.y = canvas.height;
+                    this.oldY = this.y + vy * 0.5;
+                }
+            }
+
+            applyForce(fx, fy) {
+                if (this.pinned) return;
+                this.x += fx;
+                this.y += fy;
+            }
+        }
+
+        class Constraint {
+            constructor(p1, p2, type = 'structural') {
+                this.p1 = p1;
+                this.p2 = p2;
+                const dx = p2.x - p1.x;
+                const dy = p2.y - p1.y;
+                this.restLength = Math.sqrt(dx * dx + dy * dy);
+                this.originalRestLength = this.restLength;
+                this.type = type;
+
+                if (type === 'structural') this.stiffness = STRUCTURAL_STIFFNESS;
+                else if (type === 'shear') this.stiffness = SHEAR_STIFFNESS;
+                else if (type === 'layer') this.stiffness = LAYER_STIFFNESS;
+
+                this.torn = false;
+            }
+
+            satisfy() {
+                if (this.torn) return false;
+
+                const dx = this.p2.x - this.p1.x;
+                const dy = this.p2.y - this.p1.y;
+                const dist = Math.sqrt(dx * dx + dy * dy);
+
+                if (dist === 0) return true;
+
+                const strain = dist / this.originalRestLength;
+
+                let tearLimit = TEAR_THRESHOLD;
+                if (this.type === 'shear') tearLimit = TEAR_THRESHOLD * 0.8;
+                if (this.type === 'layer') tearLimit = TEAR_THRESHOLD * 3.0;
+
+                if (strain > tearLimit) {
+                    this.tear();
+                    return false;
+                }
+
+                if (strain > PLASTIC_THRESHOLD) {
+                    const plasticStrain = (strain - PLASTIC_THRESHOLD) * PLASTICITY_RATE;
+                    this.restLength += plasticStrain * this.originalRestLength;
+                    if (this.restLength > this.originalRestLength * 2.5) {
+                        this.restLength = this.originalRestLength * 2.5;
+                    }
+                }
+
+                const diff = (this.restLength - dist) / dist;
+                const offsetX = dx * diff * 0.5 * this.stiffness;
+                const offsetY = dy * diff * 0.5 * this.stiffness;
+
+                if (!this.p1.pinned) {
+                    this.p1.x -= offsetX;
+                    this.p1.y -= offsetY;
+                }
+
+                if (!this.p2.pinned) {
+                    this.p2.x += offsetX;
+                    this.p2.y += offsetY;
+                }
+
+                return true;
+            }
+
+            tear() {
+                if (this.torn) return;
+                this.torn = true;
+
+                if (this.type === 'layer') return;
+
+                const connectionsP1 = constraints.filter(c =>
+                    !c.torn && c.type !== 'layer' && (c.p1.id === this.p1.id || c.p2.id === this.p1.id)
+                ).length;
+                const connectionsP2 = constraints.filter(c =>
+                    !c.torn && c.type !== 'layer' && (c.p1.id === this.p2.id || c.p2.id === this.p2.id)
+                ).length;
+
+                if (connectionsP1 > 2) {
+                    this.splitVertex(this.p1, this.p2);
+                } else if (connectionsP2 > 2) {
+                    this.splitVertex(this.p2, this.p1);
+                }
+            }
+
+            splitVertex(sharedPoint, otherPoint) {
+                const newPoint = new Point(sharedPoint.x, sharedPoint.y, sharedPoint.z, false);
+                newPoint.oldX = sharedPoint.oldX;
+                newPoint.oldY = sharedPoint.oldY;
+                points.push(newPoint);
+
+                if (this.p1.id === sharedPoint.id) {
+                    this.p1 = newPoint;
+                } else {
+                    this.p2 = newPoint;
+                }
+
+                const dx = newPoint.x - otherPoint.x;
+                const dy = newPoint.y - otherPoint.y;
+                const dist = Math.sqrt(dx * dx + dy * dy);
+                if (dist > 0) {
+                    newPoint.applyForce(dx * 0.2 / dist, dy * 0.2 / dist);
+                }
+            }
+
+            draw() {
+                if (this.torn) return;
+
+                // Depth shading (0 to 1)
+                const depthFactor = 1 - (Math.min(this.p1.z, this.p2.z) / (NUM_LAYERS - 1)) * 0.65;
+
+                // Handle inter-layer connections
+                if (this.type === 'layer') {
+                    ctx.beginPath();
+                    ctx.moveTo(this.p1.x, this.p1.y);
+                    ctx.lineTo(this.p2.x, this.p2.y);
+                    ctx.strokeStyle = `rgba(255, 255, 255, 0.08)`;
+                    ctx.lineWidth = 0.5;
+                    ctx.stroke();
+                    return;
+                }
+
+                // --- UPDATED COLOR PALETTE FOR 10 LAYERS ---
+                const layerColors = [
+                    [255, 50, 50],    // 0: Red
+                    [255, 140, 0],    // 1: Dark Orange
+                    [255, 215, 0],    // 2: Gold/Yellow
+                    [173, 255, 47],   // 3: Green-Yellow
+                    [50, 205, 50],    // 4: Lime Green
+                    [0, 255, 127],    // 5: Spring Green
+                    [0, 255, 255],    // 6: Cyan
+                    [30, 144, 255],   // 7: Dodger Blue
+                    [138, 43, 226],   // 8: Blue Violet
+                    [255, 20, 147]    // 9: Deep Pink
+                ];
+
+                // Fallback
+                const baseColor = layerColors[this.p1.z % layerColors.length];
+                let [r, g, b] = baseColor;
+
+                // Check strain for visual breaking feedback
+                const dx = this.p2.x - this.p1.x;
+                const dy = this.p2.y - this.p1.y;
+                const dist = Math.sqrt(dx * dx + dy * dy);
+                const strain = dist / this.originalRestLength;
+
+                if (strain > 10) {
+                    [r, g, b] = [255, 255, 255];
+                }
+
+                // Apply depth darkening
+                r = Math.floor(r * depthFactor);
+                g = Math.floor(g * depthFactor);
+                b = Math.floor(b * depthFactor);
+
+                ctx.beginPath();
+                ctx.moveTo(this.p1.x, this.p1.y);
+                ctx.lineTo(this.p2.x, this.p2.y);
+                ctx.strokeStyle = `rgb(${r},${g},${b})`;
+                ctx.lineWidth = (this.type === 'structural') ? 1.5 : 1.0;
+                ctx.stroke();
+            }
+        }
+
+        // --- GLOBALS ---
+        let points = [];
+        let constraints = [];
+        let mouse = { x: 0, y: 0, down: false, right: false };
+        let cutLine = { startX: 0, startY: 0, endX: 0, endY: 0, active: false }; // NEW: For line cutting
+
+        // --- HELPER FUNCTION: Line Segment Intersection ---
+        // Determines if two line segments (p1,q1) and (p2,q2) intersect
+        function segmentsIntersect(p1, q1, p2, q2) {
+            function orientation(p, q, r) {
+                const val = (q.y - p.y) * (r.x - q.x) - (q.x - p.x) * (r.y - q.y);
+                if (val === 0) return 0; // Collinear
+                return (val > 0) ? 1 : 2; // Clockwise or Counterclockwise
+            }
+
+            function onSegment(p, q, r) {
+                return (q.x <= Math.max(p.x, r.x) && q.x >= Math.min(p.x, r.x) &&
+                    q.y <= Math.max(p.y, r.y) && q.y >= Math.min(p.y, r.y));
+            }
+
+            const o1 = orientation(p1, q1, p2);
+            const o2 = orientation(p1, q1, q2);
+            const o3 = orientation(p2, q2, p1);
+            const o4 = orientation(p2, q2, q1);
+
+            // General case
+            if (o1 !== 0 && o2 !== 0 && o3 !== 0 && o4 !== 0 && o1 !== o2 && o3 !== o4) return true;
+
+            // Special Cases: Collinear and overlapping
+            if (o1 === 0 && onSegment(p1, p2, q1)) return true;
+            if (o2 === 0 && onSegment(p1, q2, q1)) return true;
+            if (o3 === 0 && onSegment(p2, p1, q2)) return true;
+            if (o4 === 0 && onSegment(p2, q1, q2)) return true;
+
+            return false;
+        }
+
+
+        // --- INITIALIZATION ---
+        function initCloth() {
+            points = [];
+            constraints = [];
+            cutLine.active = false; // Reset cut line state
+
+            const startX = (canvas.width - (CLOTH_WIDTH - 1) * SPACING) / 2;
+            const startY = 50;
+            const layerSize = CLOTH_WIDTH * CLOTH_HEIGHT;
+
+            for (let z = 0; z < NUM_LAYERS; z++) {
+                for (let y = 0; y < CLOTH_HEIGHT; y++) {
+                    for (let x = 0; x < CLOTH_WIDTH; x++) {
+                        const px = startX + x * SPACING + (z * LAYER_OFFSET);
+                        const py = startY + y * SPACING + (z * LAYER_OFFSET);
+                        const pinned = (y === 0);
+                        points.push(new Point(px, py, z, pinned));
+                    }
+                }
+            }
+
+            for (let z = 0; z < NUM_LAYERS; z++) {
+                const currentLayerStart = z * layerSize;
+                const prevLayerStart = (z - 1) * layerSize;
+
+                for (let y = 0; y < CLOTH_HEIGHT; y++) {
+                    for (let x = 0; x < CLOTH_WIDTH; x++) {
+                        const idx = currentLayerStart + y * CLOTH_WIDTH + x;
+
+                        // Within Layer
+                        if (x < CLOTH_WIDTH - 1) {
+                            constraints.push(new Constraint(points[idx], points[idx + 1], 'structural'));
+                        }
+                        if (y < CLOTH_HEIGHT - 1) {
+                            constraints.push(new Constraint(points[idx], points[idx + CLOTH_WIDTH], 'structural'));
+                        }
+                        if (x < CLOTH_WIDTH - 1 && y < CLOTH_HEIGHT - 1) {
+                            constraints.push(new Constraint(points[idx], points[idx + CLOTH_WIDTH + 1], 'shear'));
+                            constraints.push(new Constraint(points[idx + 1], points[idx + CLOTH_WIDTH], 'shear'));
+                        }
+
+                        // Between Layers
+                        if (z > 0) {
+                            const prevIdx = prevLayerStart + y * CLOTH_WIDTH + x;
+                            constraints.push(new Constraint(points[idx], points[prevIdx], 'layer'));
+                            if (x < CLOTH_WIDTH - 1) {
+                                constraints.push(new Constraint(points[idx], points[prevIdx + 1], 'layer'));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // --- MAIN LOOP ---
+        function update() {
+            const dt = 1;
+            points.forEach(p => p.update(dt));
+
+            if (mouse.down && !mouse.right) { // Mouse Pull
+                points.forEach(p => {
+                    const dx = p.x - mouse.x;
+                    const dy = p.y - mouse.y;
+                    const dist = Math.sqrt(dx * dx + dy * dy);
+                    if (dist < MOUSE_INFLUENCE_RADIUS && dist > 0) {
+                        const force = (1 - dist / MOUSE_INFLUENCE_RADIUS) * MOUSE_FORCE;
+                        p.applyForce(-dx * force * 0.1, -dy * force * 0.1);
+                    }
+                });
+            } else if (mouse.down && mouse.right && cutLine.active) { // Line Cut in Progress
+                cutLine.endX = mouse.x;
+                cutLine.endY = mouse.y;
+
+                // Check for intersections with the growing cut line
+                const p1 = { x: cutLine.startX, y: cutLine.startY };
+                const q1 = { x: cutLine.endX, y: cutLine.endY };
+
+                constraints.forEach(c => {
+                    if (!c.torn) {
+                        const p2 = { x: c.p1.x, y: c.p1.y };
+                        const q2 = { x: c.p2.x, y: c.p2.y };
+                        if (segmentsIntersect(p1, q1, p2, q2)) {
+                            c.tear();
+                        }
+                    }
+                });
+            }
+
+            for (let i = 0; i < CONSTRAINT_ITERATIONS; i++) {
+                constraints.forEach(c => c.satisfy());
+            }
+
+            constraints = constraints.filter(c => !c.torn);
+        }
+
+        function draw() {
+            ctx.fillStyle = '#0a0a0a';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+            // Draw layers from back (Z=9) to front (Z=0)
+            for (let z = NUM_LAYERS - 1; z >= 0; z--) {
+                constraints.forEach(c => {
+                    if (Math.max(c.p1.z, c.p2.z) === z) {
+                        c.draw();
+                    }
+                });
+            }
+
+            if (mouse.down && !mouse.right) { // Draw pull cursor
+                ctx.beginPath();
+                ctx.arc(mouse.x, mouse.y, MOUSE_INFLUENCE_RADIUS, 0, Math.PI * 2);
+                ctx.strokeStyle = 'rgba(255,255,255,0.5)';
+                ctx.lineWidth = 2;
+                ctx.stroke();
+            } else if (mouse.down && mouse.right && cutLine.active) { // Draw cutting line
+                ctx.beginPath();
+                ctx.moveTo(cutLine.startX, cutLine.startY);
+                ctx.lineTo(cutLine.endX, cutLine.endY);
+                ctx.strokeStyle = '#ff0000';
+                ctx.lineWidth = 3;
+                ctx.stroke();
+            }
+
+            ctx.fillStyle = '#666';
+            ctx.font = '12px Arial';
+            ctx.fillText(`Active Vertices: ${points.length}`, 10, 20);
+            ctx.fillText(`Active Threads: ${constraints.length}`, 10, 40);
+            ctx.fillText(`Layers: ${NUM_LAYERS}`, 10, 60);
+        }
+
+        function animate() {
+            update();
+            draw();
+            requestAnimationFrame(animate);
+        }
+
+        // --- INPUT HANDLING ---
+        canvas.addEventListener('mousedown', (e) => {
+            const rect = canvas.getBoundingClientRect();
+            mouse.x = e.clientX - rect.left;
+            mouse.y = e.clientY - rect.top;
+            mouse.down = true;
+            mouse.right = e.button === 2;
+
+            if (mouse.right) { // Start a cut line
+                cutLine.startX = mouse.x;
+                cutLine.startY = mouse.y;
+                cutLine.endX = mouse.x; // Start with a point
+                cutLine.endY = mouse.y;
+                cutLine.active = true;
+            }
+        });
+
+        canvas.addEventListener('mousemove', (e) => {
+            const rect = canvas.getBoundingClientRect();
+            mouse.x = e.clientX - rect.left;
+            mouse.y = e.clientY - rect.top;
+
+            if (mouse.down && mouse.right && cutLine.active) { // Update end point of cut line
+                cutLine.endX = mouse.x;
+                cutLine.endY = mouse.y;
+            }
+        });
+
+        canvas.addEventListener('mouseup', () => {
+            mouse.down = false;
+            mouse.right = false;
+            cutLine.active = false; // Deactivate cut line when mouse is released
+        });
+
+        canvas.addEventListener('mouseleave', () => {
+            mouse.down = false;
+            mouse.right = false;
+            cutLine.active = false; // Deactivate cut line if mouse leaves canvas
+        });
+
+        canvas.addEventListener('contextmenu', (e) => { e.preventDefault(); });
+
+        // --- NEW: Dynamic Input Handlers ---
+        const spacingInput = document.getElementById('spacingInput');
+        const spacingVal = document.getElementById('spacingVal');
+        const gravityInput = document.getElementById('gravityInput');
+        const gravityVal = document.getElementById('gravityVal');
+
+        spacingInput.addEventListener('input', (e) => {
+            SPACING = parseInt(e.target.value);
+            spacingVal.textContent = SPACING;
+            initCloth(); // Must reset cloth to apply new spacing
+        });
+
+        gravityInput.addEventListener('input', (e) => {
+            GRAVITY.y = parseFloat(e.target.value);
+            gravityVal.textContent = GRAVITY.y;
+            // No reset needed for gravity, it applies in real-time
+        });
+
+        function resetCloth() {
+            initCloth();
+        }
+
+        initCloth();
+        animate();
+    </script>
+</body>
+
+</html>
